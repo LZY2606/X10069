@@ -187,6 +187,8 @@
 #![doc(html_logo_url = "https://kdl.dev/logo.svg")]
 
 pub use document::*;
+#[cfg(feature = "span")]
+pub use edit::*;
 pub use entry::*;
 pub use error::*;
 pub use fmt::*;
@@ -196,6 +198,8 @@ pub use node::*;
 pub use value::*;
 
 mod document;
+#[cfg(feature = "span")]
+mod edit;
 mod entry;
 mod error;
 mod fmt;

@@ -1,5 +1,100 @@
 # `kdl` Release Changelog
 
+## Unreleased
+
+### Features
+
+* **edit:** add positional, trivia-preserving source editing
+  (`EditPlan`/`SourceEdit`, gated on the existing default `span` feature).
+  A plan is built against one exact source version and turns high level
+  operations — `set_node_name`, `set_argument`, `set_property`, and
+  `delete_node` — into a set of non-overlapping byte edits. Applying the plan
+  splices those edits into a copy of the source, leaving every byte of
+  untouched whitespace, newline, comment and value literal exactly as it was.
+  All new tests live in the independently runnable
+  `tests/positional_edit.rs` fixture (`cargo test --test positional_edit`).
+
+### Implementation notes
+
+* **Spans, not re-tokenization.** The new code does not re-parse or rescan
+  the source. It derives edit ranges purely from the spans the parser already
+  records:
+  * A node *name* edit replaces exactly `KdlIdentifier::span()` (the type
+    annotation is deliberately outside it).
+  * An argument/property *value* edit replaces the trailing
+    `value_repr.len()` bytes of `KdlEntry::span()`. The entry span covers
+    `key=value` but never leading or trailing trivia, and `value_repr` is the
+    exact source text of the value token. This is what makes raw strings,
+    multiline raw/quoted strings and typed values all land on the right bytes
+    without special-casing any of them.
+  * A node *deletion* removes the range
+    `span.start - leading.len() .. span.end + terminator.len()`. This is the
+    precise set of bytes the tree API discards when a node is removed from its
+    parent: the node's own leading trivia and its terminator (which may be a
+    line comment or a CRLF newline). The separator that belongs to the
+    document/parent and any document trailing trivia stay in place, which is
+    why deletions match the tree result for first, middle, last and nested
+    nodes and for `;`-, newline- and EOF-terminated nodes.
+* **Same-source binding.** `EditPlan::new` records the source length and a
+  deterministic FNV-1a checksum; `apply` rejects any string that differs in
+  either. Independently, every operation anchor-checks its target: the value
+  bytes, and the node's leading trivia/body/terminator, must equal the text
+  recorded on the parsed node. A node or entry taken from a different parse
+  (or from a source that merely kept the same length after an edit) therefore
+  fails with `EditErrorKind::MismatchedSource` instead of corrupting the text.
+* **Conflict detection.** Edits are rejected at planning time whenever their
+  half-open byte ranges cross or contain one another. Merely touching
+  (adjacent) edits are allowed. Edits are returned sorted by offset.
+* **Validity of replacements.** New names/values are rendered with the normal
+  `Display` implementation and re-parsed (as an identifier / padded entry) and
+  compared to the intended value, so a plan can never emit unparsable KDL.
+  Type annotations are preserved on value replacement, matching the tree API's
+  "set the value, keep the entry's type" semantics.
+* **Errors integrate with the existing model.** `EditError` implements
+  `miette::Diagnostic` and carries the source, a primary span, an optional
+  conflicting span, a message, a label and help text, mirroring
+  `KdlDiagnostic`. No existing public type, default, ordering, or boundary
+  behaviour was changed; the module is purely additive and is compiled out
+  entirely when the `span` feature is disabled.
+
+### Coverage gaps that previously existed
+
+* There was no positional editing surface at all: the only way to mutate a
+  parsed document was through the tree and `to_string`, which re-renders whole
+  nodes and makes the blast radius on original bytes unpredictable.
+* Nothing asserted how parser spans line up with *value* tokens for raw and
+  multiline literals, or that deletion byte ranges correspond to tree-API node
+  removal across CRLF, comments and child blocks. The new fixtures pin all of
+  these.
+
+### Adjacent-semantics regression guards
+
+* `tests/positional_edit.rs` keeps CRLF byte-for-byte, keeps inline and
+  full-line comments on unrelated nodes, preserves odd-but-legal spacing
+  around `key = value`, preserves type annotations on value edits, keeps
+  duplicate-property "last wins" resolution, and keeps a leading BOM as
+  document (not node) trivia.
+* A shared oracle (`assert_edits_match_tree`) parses the applied text, then
+  compares its format-stripped AST against the format-stripped AST produced by
+  the ordinary tree-API mutation for every operation.
+
+### Most dangerous counterexample
+
+The single most dangerous case is **an edit whose span is contained inside a
+  node that the same plan also deletes** — e.g.
+  `parent { child 1 }` where one caller requests `delete_node(parent)` and
+  another requests changing `child`'s argument. Because the two target ranges
+  nest, applying them is order-dependent: depending on which is applied first
+  the inner edit either targets bytes that no longer exist or silently
+  resurrects text the deletion was meant to remove. A naive
+  smallest-offset-first or "just apply in request order" strategy would guess
+  and corrupt the file. The regression tests
+  `rejects_an_edit_inside_a_node_that_is_being_deleted` and
+  `rejects_crossing_edits_spanning_a_deletion_boundary` assert that this is a
+  hard `OverlappingEdits` error (with both spans labelled), never a reordered
+  application. The same containment check also covers editing the deleted
+  node's own name or value twice.
+
 <a name="6.7.1"></a>
 ## 6.7.1 (2026-05-31)
 
