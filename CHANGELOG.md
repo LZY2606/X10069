@@ -1,5 +1,99 @@
 # `kdl` Release Changelog
 
+## Unreleased
+
+### Features
+
+* **edit:** add a located, trivia-preserving source-edit API (`kdl::edit`,
+  behind the default `span` feature). A new `SourceVersion` pins a plan to one
+  parsed snapshot; `EditPlan` supports `rename_node`, `set_argument`,
+  `set_property`, and `delete_node`, returning non-overlapping byte-range
+  `SourceEdit`s and applying them to produce new source text. Every byte
+  outside an edit range is preserved verbatim (whitespace, comments, raw
+  strings, multi-line strings, CRLF). Overlapping/contained edits and plans
+  built from different source versions are rejected with `KdlError`
+  diagnostics instead of being applied in a guessed order.
+
+### Implementation notes — fidelity AST / located editing / conflicts
+
+* **Why byte spans work without parser changes.** The v2 parser already stores
+  absolute byte spans on documents, nodes, entries and identifiers, and stores
+  all trivia (leading/trailing whitespace, line comments, slash-dash text,
+  type-annotation padding) in the `Kdl*Format` structs. The new module only
+  *reads* that data; no existing struct, parser rule, `Default`, ordering, or
+  boundary behavior was changed. Entry spans cover `name=value` for properties
+  and `value` for arguments, anchored at both ends with leading trivia stored
+  outside the span. The value-literal range is therefore computed by advancing
+  forward past `name` + `after_key` + `=` + `after_eq` (plus any `(ty)`
+  annotation and its internal spaces), which is independent of how the literal
+  itself is spelled.
+* **Node deletion and terminators.** A node span ends just before its
+  terminator. Deleting a node removes its span and additionally swallows a `;`
+  or single-line-comment terminator (leaving either behind would be a syntax
+  error or would re-home a comment onto the previous node). A plain newline
+  terminator and all leading/trailing trivia are intentionally kept, so blank
+  lines and indentation survive and the result still parses.
+* **Versioning.** `SourceVersion` stores the source (kept alive in an `Arc`)
+  and an FNV-1a fingerprint, but version equality is always confirmed with a
+  full string comparison. `EditPlan::new` additionally requires the parsed
+  document to render back to the exact pinned bytes, which rejects documents
+  mutated (or re-serialized) after parsing before any edit is planned.
+* **Error model.** All failures reuse `KdlError`/`KdlDiagnostic` with labeled
+  spans against the pinned source: foreign nodes, missing arguments/
+  properties, overlap pairs (both ranges are labeled), version mismatch, and
+  ranges that exceed the source or split a UTF-8 boundary. Nothing panics on
+  bad caller input, and there are no sleeps, network calls, machine-absolute
+  paths, or fixture-name special cases in the implementation or tests.
+* **Rendering of new values.** Replacements use the existing `Display`
+  implementations (`KdlValue`, `KdlIdentifier`), i.e. the same default spelling
+  the tree API produces when an entry has no custom `value_repr`. The old
+  type annotation on a replaced value is intentionally not carried over (the
+  tree API's `entry_mut().set_value(..)` likewise leaves the value without a
+  type); every fixture test asserts the edited AST equals the tree-API result
+  after `clear_format_recursive`, in addition to re-parsing successfully and
+  checking byte preservation.
+
+### Coverage that was previously missing
+
+* There was no API that could change one entry while guaranteeing untouched
+  bytes stay untouched; tree-API mutation forces a full subtree re-render and
+  cannot report which source region changed.
+* Nothing detected contradictory edits up front. Two edits that both touch the
+  same argument/property, or an argument edit nested inside a node deletion,
+  previously had no defined outcome.
+* Nothing pinned "literal inside `key = (ty)value`" anchoring, slash-dash
+  interaction, or CRLF preservation with assertions. These are now covered by
+  standalone fixtures in `tests/edit_fixtures/` and independently runnable
+  tests in `tests/editing.rs`
+  (`cargo test --locked --all-features --test editing <name>`).
+
+### Adjacent-semantics regression safeguards
+
+* Fixtures deliberately include block comments, line comments, slash-dashed
+  entries/nodes, duplicate properties, type-annotated entries and values,
+  nested children, raw strings (single- and multi-line, varying `#` counts),
+  triple-quoted multi-line strings, and CRLF; each edit test asserts (1) the
+  output parses, (2) its canonicalized AST equals performing the same mutation
+  through the tree API, and (3) all bytes outside the returned edit ranges are
+  contiguous and identical. Overlap containment (argument inside node
+  deletion), identical-range duplicate edits, cross-version merge/apply,
+  unfaithful documents, and foreign-node references each have dedicated
+  negative tests.
+
+### Most dangerous counterexample and its regression test
+
+The sharpest failure mode for a locational editor is **mis-anchoring the value
+literal of a property that has whitespace around `=` and a type annotation**:
+`n  key  =  (t)"old value"  next`. Computing the replacement range from the
+entry start (instead of advancing past key/equals/type) either deletes the key
+and `=` or leaves the old literal dangling, silently producing
+`n  7key  =  (t)"old value"  next` — text that is hard to notice in a large
+human-maintained file. The regression test
+`property_value_anchor_regression_with_type_and_key` asserts the resolved
+range is exactly `"old value"` and the output is exactly
+`n  key  =  (t)7  next`, and `argument_anchor_skips_type_annotation_only`
+pins the same rule for a typed positional argument.
+
 <a name="6.7.1"></a>
 ## 6.7.1 (2026-05-31)
 

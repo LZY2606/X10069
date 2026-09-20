@@ -1,0 +1,4 @@
+// raw-string fixture: literals must keep spelling unless touched
+package #"first arg"# name=#"kdl "rocks""# path=#"C:\temp\kdl"#
+server host="127.0.0.1" greeting=##"a "raw" word needs hashes"##
+note raw=#"untouched "value" here"#

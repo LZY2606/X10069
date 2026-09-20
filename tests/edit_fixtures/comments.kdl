@@ -1,0 +1,6 @@
+// leading comment stays
+node arg1 /* inline */ arg2 /-dropped kept {
+    child 1 // trailing child comment
+    other key="v"; /- whole /- node stays
+}
+// final comment

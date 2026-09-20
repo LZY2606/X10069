@@ -196,6 +196,8 @@ pub use node::*;
 pub use value::*;
 
 mod document;
+#[cfg(feature = "span")]
+pub mod edit;
 mod entry;
 mod error;
 mod fmt;

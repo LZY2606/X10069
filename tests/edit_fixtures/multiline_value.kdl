@@ -1,0 +1,9 @@
+config text="""
+    line one
+    line "quoted"
+    """
+script #"""
+    raw
+    multi
+    """#
+after 1
